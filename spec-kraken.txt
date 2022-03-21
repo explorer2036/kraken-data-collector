@@ -1,0 +1,35 @@
+
+Crypto Market Data collector in Go
+
+Crypto Market Data collector in Go - Live Order Book from Kraken API
+
+Documentation
+  https://docs.kraken.com/rest/
+  https://docs.kraken.com/websockets/
+
+Processing
+  1. Get list of all tradable spot asset pairs. 
+
+  2. For all asset pairs (see 1.), get orderbook data concurrently using websocket(s)
+    https://docs.kraken.com/websockets/#message-book
+
+  3. Store data at 1 second interval to file as JSON orderbook per line. 
+     Note - the file is not valid JSON - valid JSON struct is each line separately. 
+     You can imagine this as "JSON log" - add only file format 
+     with each line being valid JSON data.
+     * Each asset pair goes to separate file, for example:
+       BTC/USD goes to btc-usd.json
+       ETH/USD goes to eth-usd.json
+       etc.
+     * each record must contain time / timestamp *
+
+Notes
+  You have to maintain live orderbook state:
+    - at the beginning you get initial snapshot
+    - then you have to process all updates and maintain accurate live orderbook state
+    - every second you save actual state to filesystem
+ 
+  Test coverage
+    - more than 50% coverage is OK.
+    - the more the better of course ;)
+
