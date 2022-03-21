@@ -1,10 +1,13 @@
 package kraken
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,9 +16,10 @@ import (
 )
 
 const (
-	krakenAPIURL     = "https://api.kraken.com"
-	krakenAPIVersion = "0"
-	krakenAssetPairs = "AssetPairs"
+	krakenAPIURL      = "https://api.kraken.com"
+	krakenAPIVersion  = "0"
+	krakenAssetPairs  = "AssetPairs"
+	krakenSnapshotDir = "data"
 )
 
 type Kraken struct {
@@ -24,12 +28,12 @@ type Kraken struct {
 	conn *websocket.Conn
 
 	obsMutex sync.RWMutex
-	obs      map[string]*OrderBook
+	obs      map[string]*CachedOrderBook
 }
 
 func New() *Kraken {
 	s := &Kraken{
-		obs: make(map[string]*OrderBook),
+		obs: make(map[string]*CachedOrderBook),
 	}
 	return s
 }
@@ -58,6 +62,8 @@ func (k *Kraken) AssetPairs(ctx context.Context) (map[string]AssetPairs, error) 
 }
 
 func (s *Kraken) Start(ctx context.Context) error {
+	os.MkdirAll(krakenSnapshotDir, os.ModePerm)
+
 	// init the websocket connection to kraken exchange
 	if err := s.initStream(ctx); err != nil {
 		return fmt.Errorf("init websocket stream: %v", err)
@@ -74,12 +80,12 @@ func (s *Kraken) Start(ctx context.Context) error {
 		pairs = append(pairs, item.Wsname)
 	}
 	// subscribe the pairs
-	if err := s.doSubscribe(krakenWsOrderbook, pairs[:2]); err != nil {
+	if err := s.doSubscribe(krakenWsOrderbook, pairs[:5]); err != nil {
 		return fmt.Errorf("do subscribe: %w", err)
 	}
 
 	// snapshot the order book to disk periodly
-	// go s.snapshot2Disk(ctx)
+	go s.snapshot2Disk(ctx)
 
 	// block until received exit signal
 	<-ctx.Done()
@@ -87,20 +93,43 @@ func (s *Kraken) Start(ctx context.Context) error {
 	return nil
 }
 
-type OrderBookHistory struct {
-	Timestamp string            `json:"timestamp"`
-	Snapshot  OrderBookSnapshot `json:"snapshot"`
-}
-
-type OrderBookSnapshot struct {
-	Asks []interface{} `json:"asks"`
-	Bids []interface{} `json:"bids"`
-}
-
-func (s *Kraken) snapshot2Disk(ctx context.Context) {
+func (s *Kraken) collectSnapshots() []*OrderBookSnapshot {
 	s.obsMutex.RLock()
 	defer s.obsMutex.RUnlock()
 
+	var snapshots []*OrderBookSnapshot
+	for pair, ob := range s.obs {
+		total := ob.Success + ob.Failure
+		if total > 0 {
+			logrus.Infof("%s \t-> %d/%d(%.2f%%)", pair, ob.Success, total, float64(ob.Success)/float64(total)*100)
+		}
+		snapshot := OrderBookSnapshot{
+			Pair:      pair,
+			Timestamp: ob.LastUpdated,
+			Body:      OrderBookBody{},
+		}
+
+		sortedAsks := sortOrderBook(ob.Asks, true)
+		for _, ask := range sortedAsks {
+			var group []string
+			group = append(group, ask.Price)
+			group = append(group, ask.Quantity)
+			snapshot.Body.Asks = append(snapshot.Body.Asks, group)
+		}
+
+		sortedBids := sortOrderBook(ob.Bids, true)
+		for _, bid := range sortedBids {
+			var group []string
+			group = append(group, bid.Price)
+			group = append(group, bid.Quantity)
+			snapshot.Body.Bids = append(snapshot.Body.Bids, group)
+		}
+		snapshots = append(snapshots, &snapshot)
+	}
+	return snapshots
+}
+
+func (s *Kraken) snapshot2Disk(ctx context.Context) {
 	go func() {
 		ticker := time.NewTicker(time.Second * 5)
 		for {
@@ -109,34 +138,36 @@ func (s *Kraken) snapshot2Disk(ctx context.Context) {
 				ticker.Stop()
 				return
 			case <-ticker.C:
-				for _, ob := range s.obs {
-					history := OrderBookHistory{
-						Timestamp: ob.LastUpdated,
-						Snapshot:  OrderBookSnapshot{},
+				for _, snapshot := range s.collectSnapshots() {
+					if err := sync2Disk(snapshot); err != nil {
+						logrus.Errorf("sync snapshot to disk: %v", err)
 					}
-
-					sortedAsks := sortOrderBook(ob.Asks, true)
-					for _, ask := range sortedAsks {
-						var group []string
-						group = append(group, ask.Price)
-						group = append(group, ask.Quantity)
-						history.Snapshot.Asks = append(history.Snapshot.Asks, group)
-					}
-
-					sortedBids := sortOrderBook(ob.Bids, true)
-					for _, bid := range sortedBids {
-						var group []string
-						group = append(group, bid.Price)
-						group = append(group, bid.Quantity)
-						history.Snapshot.Bids = append(history.Snapshot.Bids, group)
-					}
-
-					b, _ := json.Marshal(history)
-					logrus.Infof("history: %s", b)
 				}
 			}
 		}
 	}()
+}
+
+func sync2Disk(snapshot *OrderBookSnapshot) error {
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		return err
+	}
+
+	name := fmt.Sprintf("%s/%s.json", krakenSnapshotDir, strings.ToLower(strings.ReplaceAll(snapshot.Pair, "/", "-")))
+	file, err := os.OpenFile(name, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	var buf bytes.Buffer
+	buf.Write(data)
+	buf.WriteByte('\n')
+	if _, err := file.Write(buf.Bytes()); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s *Kraken) Stop() {

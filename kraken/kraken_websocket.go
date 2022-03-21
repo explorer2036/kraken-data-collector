@@ -149,7 +149,7 @@ func (s *Kraken) handleOrderBook(pair string, update *OrderBookUpdate) error {
 
 	ob, ok := s.obs[pair]
 	if !ok {
-		ob = &OrderBook{
+		ob = &CachedOrderBook{
 			Asks: make(map[string]*OrderBookItem),
 			Bids: make(map[string]*OrderBookItem),
 		}
@@ -222,7 +222,9 @@ func (s *Kraken) handleOrderBook(pair string, update *OrderBookUpdate) error {
 
 	// validate the checksum of the update
 	if !s.validateCRC32(asks[:krakenChecksumCalculation], bids[:krakenChecksumCalculation], update.CheckSum) {
-		return fmt.Errorf("%s: validate checksum", pair)
+		ob.Failure += 1
+	} else {
+		ob.Success += 1
 	}
 
 	return nil

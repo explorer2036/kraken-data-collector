@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 )
 
 // KrakenMessage - data structure of default Kraken WS update
@@ -19,8 +20,24 @@ func (s *KrakenMessage) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &fields); err != nil {
 		return err
 	}
-	if len(fields) != 4 {
+	if len(fields) < 4 {
 		return fmt.Errorf("invalid message: %s", data)
+	}
+	if len(fields) == 5 {
+		asks, bids := fields[1], fields[2]
+		if (asks[0] != '{' && asks[len(asks)-1] != '}') || (bids[0] != '{' && bids[len(bids)-1] != '}') {
+			return fmt.Errorf("invalid message: %s", data)
+		}
+		// merge asks and bids
+		merged := make([]byte, 0, len(asks)+len(bids)-1)
+		merged = append(merged, asks[0:len(asks)-1]...)
+		merged = append(merged, ',')
+		merged = append(merged, bids[1:]...)
+		encoded, err := json.Marshal([]json.RawMessage{fields[0], merged, fields[3], fields[4]})
+		if err != nil {
+			return err
+		}
+		data = encoded
 	}
 	body := []interface{}{
 		&s.ChannelID,
@@ -95,6 +112,7 @@ func (s *OrderBookItem) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(fields[2], &s.Timestamp); err != nil {
 		return err
 	}
+	s.Timestamp = strings.Split(s.Timestamp, ".")[0]
 
 	// if the quantity is zero, delete the price from snapshot
 	quantity, err := strconv.ParseFloat(s.Quantity, 64)
@@ -108,10 +126,12 @@ func (s *OrderBookItem) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-type OrderBook struct {
+type CachedOrderBook struct {
 	Asks        map[string]*OrderBookItem
 	Bids        map[string]*OrderBookItem
 	LastUpdated string
+	Failure     uint64 // checksum failed
+	Success     uint64 // checksum success
 }
 
 type SubscriptionChannel struct {
@@ -173,4 +193,15 @@ type AssetPairs struct {
 	MarginCall        int         `json:"margin_call"`
 	MarginStop        int         `json:"margin_stop"`
 	Ordermin          string      `json:"ordermin"`
+}
+
+type OrderBookSnapshot struct {
+	Pair      string        `json:"-"`
+	Timestamp string        `json:"timestamp"`
+	Body      OrderBookBody `json:"snapshot"`
+}
+
+type OrderBookBody struct {
+	Asks []interface{} `json:"asks"`
+	Bids []interface{} `json:"bids"`
 }
