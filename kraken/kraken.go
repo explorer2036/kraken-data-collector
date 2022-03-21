@@ -22,7 +22,6 @@ type Kraken struct {
 	sync.Mutex
 
 	conn *websocket.Conn
-	subs map[string]*SubscriptionChannel
 
 	obsMutex sync.RWMutex
 	obs      map[string]*OrderBook
@@ -30,8 +29,7 @@ type Kraken struct {
 
 func New() *Kraken {
 	s := &Kraken{
-		subs: make(map[string]*SubscriptionChannel),
-		obs:  make(map[string]*OrderBook),
+		obs: make(map[string]*OrderBook),
 	}
 	return s
 }
@@ -90,7 +88,7 @@ func (s *Kraken) Start(ctx context.Context) error {
 }
 
 type OrderBookHistory struct {
-	Timestamp time.Time         `json:"timestamp"`
+	Timestamp string            `json:"timestamp"`
 	Snapshot  OrderBookSnapshot `json:"snapshot"`
 }
 

@@ -3,7 +3,7 @@ package kraken
 import (
 	"encoding/json"
 	"fmt"
-	"time"
+	"strconv"
 )
 
 // KrakenMessage - data structure of default Kraken WS update
@@ -12,6 +12,23 @@ type KrakenMessage struct {
 	Data        json.RawMessage
 	ChannelName string
 	Pair        string
+}
+
+func (s *KrakenMessage) UnmarshalJSON(data []byte) error {
+	var fields []json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	if len(fields) != 4 {
+		return fmt.Errorf("invalid message: %s", data)
+	}
+	body := []interface{}{
+		&s.ChannelID,
+		&s.Data,
+		&s.ChannelName,
+		&s.Pair,
+	}
+	return json.Unmarshal(data, &body)
 }
 
 // OrderBookUpdate - data structure for order book update
@@ -51,23 +68,56 @@ func (s *OrderBookUpdate) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-type SubscriptionChannel struct {
-	Subscription string
-	Pair         string
-	ChannelName  string
+type OrderBookItem struct {
+	Price     string
+	Quantity  string
+	Timestamp string
+	Republish bool
+	Deleted   bool
+}
+
+func (s *OrderBookItem) UnmarshalJSON(data []byte) error {
+	var fields []json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	if len(fields) < 3 {
+		return fmt.Errorf("invalid order book item: %s", data)
+	}
+	s.Republish = len(fields) == 4
+
+	if err := json.Unmarshal(fields[0], &s.Price); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(fields[1], &s.Quantity); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(fields[2], &s.Timestamp); err != nil {
+		return err
+	}
+
+	// if the quantity is zero, delete the price from snapshot
+	quantity, err := strconv.ParseFloat(s.Quantity, 64)
+	if err != nil {
+		return err
+	}
+	if quantity == 0 {
+		s.Deleted = true
+	}
+
+	return nil
 }
 
 type OrderBook struct {
 	Asks        map[string]*OrderBookItem
 	Bids        map[string]*OrderBookItem
-	LastUpdated time.Time
+	LastUpdated string
 }
 
-type OrderBookItem struct {
-	Price     string
-	Quantity  string
-	Time      json.Number
-	Republish bool
+type SubscriptionChannel struct {
+	Subscription string
+	Pair         string
+	ChannelName  string
 }
 
 type SystemStatus struct {

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"hash/crc32"
-	"math"
 	"net"
 	"net/http"
 	"sort"
@@ -97,228 +96,9 @@ func (s *Kraken) receiveMessage(ctx context.Context) {
 			return
 		}
 		if err := s.handleMessage(data); err != nil {
-			logrus.Errorf("handle message: %v", err)
+			logrus.Errorf("%v", err)
 		}
 	}
-}
-
-func (s *Kraken) addSubscriptionChannel(status *SubscriptionStatus) {
-	s.Lock()
-	defer s.Unlock()
-	s.subs[status.Pair] = &SubscriptionChannel{
-		Subscription: status.Subscription.Name,
-		Pair:         status.Pair,
-		ChannelName:  status.ChannelName,
-	}
-}
-
-func (s *Kraken) findSubscriptionChannel(key string) *SubscriptionChannel {
-	s.Lock()
-	defer s.Unlock()
-	return s.subs[key]
-}
-
-// timeFromUnixTimestampDecimal converts a unix timestamp in decimal form to
-// a time.Time
-func timeFromUnixTimestampDecimal(input float64) time.Time {
-	i, f := math.Modf(input)
-	return time.Unix(int64(i), int64(f*(1e9)))
-}
-
-func (s *Kraken) handleOrderBookSnapshot(sc *SubscriptionChannel, as, bs []interface{}) error {
-	s.obsMutex.Lock()
-	defer s.obsMutex.Unlock()
-
-	ob, ok := s.obs[sc.Pair]
-	if !ok {
-		ob = &OrderBook{
-			Asks: make(map[string]*OrderBookItem),
-			Bids: make(map[string]*OrderBookItem),
-		}
-	}
-
-	var lastUpdatedTime time.Time
-	for i := range as {
-		asks, ok := as[i].([]interface{})
-		if !ok {
-			return errors.New("type asset asks")
-		}
-		if len(asks) < 3 {
-			return errors.New("invalid asks len")
-		}
-		price, quantity := asks[0].(string), asks[1].(string)
-
-		value, err := strconv.ParseFloat(quantity, 64)
-		if err != nil {
-			return fmt.Errorf("parse quantity: %w", err)
-		}
-		if value == 0 {
-			continue
-		}
-		ob.Asks[price] = &OrderBookItem{
-			Price:    price,
-			Quantity: quantity,
-		}
-
-		timestamp, err := strconv.ParseFloat(asks[2].(string), 64)
-		if err != nil {
-			return err
-		}
-		askUpdatedTime := timeFromUnixTimestampDecimal(timestamp)
-		if lastUpdatedTime.Before(askUpdatedTime) {
-			lastUpdatedTime = askUpdatedTime
-		}
-	}
-
-	for i := range bs {
-		bids, ok := bs[i].([]interface{})
-		if !ok {
-			return errors.New("type asset bids")
-		}
-		if len(bids) < 3 {
-			return errors.New("invalid bids len")
-		}
-		price, quantity := bids[0].(string), bids[1].(string)
-
-		value, err := strconv.ParseFloat(quantity, 64)
-		if err != nil {
-			return fmt.Errorf("parse quantity: %w", err)
-		}
-		if value == 0 {
-			continue
-		}
-		ob.Bids[price] = &OrderBookItem{
-			Price:    price,
-			Quantity: quantity,
-		}
-
-		timestamp, err := strconv.ParseFloat(bids[2].(string), 64)
-		if err != nil {
-			return err
-		}
-		askUpdatedTime := timeFromUnixTimestampDecimal(timestamp)
-		if lastUpdatedTime.Before(askUpdatedTime) {
-			lastUpdatedTime = askUpdatedTime
-		}
-	}
-	ob.LastUpdated = lastUpdatedTime
-	s.obs[sc.Pair] = ob
-	return nil
-}
-
-func (s *Kraken) handleOrderBookUpdate(sc *SubscriptionChannel, ad, bd []interface{}, checksum string) error {
-	s.obsMutex.Lock()
-	defer s.obsMutex.Unlock()
-
-	ob, ok := s.obs[sc.Pair]
-	if !ok {
-		return fmt.Errorf("order book for %s not found", sc.Pair)
-	}
-
-	var lastUpdatedTime time.Time
-	// Ask data is not always sent
-	for i := range ad {
-		asks, ok := ad[i].([]interface{})
-		if !ok {
-			return errors.New("type asset asks")
-		}
-		if len(asks) < 3 {
-			return errors.New("invalid asks len")
-		}
-		price, quantity := asks[0].(string), asks[1].(string)
-
-		value, err := strconv.ParseFloat(quantity, 64)
-		if err != nil {
-			return fmt.Errorf("parse quantity: %w", err)
-		}
-		if value == 0 {
-			delete(ob.Asks, price)
-			continue
-		}
-
-		item, ok := ob.Asks[price]
-		if !ok {
-			item = &OrderBookItem{
-				Price:    price,
-				Quantity: quantity,
-			}
-		} else {
-			item.Quantity = quantity
-		}
-		ob.Asks[price] = item
-
-		timestamp, err := strconv.ParseFloat(asks[2].(string), 64)
-		if err != nil {
-			return err
-		}
-		askUpdatedTime := timeFromUnixTimestampDecimal(timestamp)
-		if lastUpdatedTime.Before(askUpdatedTime) {
-			lastUpdatedTime = askUpdatedTime
-		}
-	}
-
-	// Bid data is not always sent
-	for i := range bd {
-		bids, ok := bd[i].([]interface{})
-		if !ok {
-			return errors.New("type asset bids")
-		}
-		if len(bids) < 3 {
-			return errors.New("invalid bids len")
-		}
-		price, quantity := bids[0].(string), bids[1].(string)
-
-		value, err := strconv.ParseFloat(quantity, 64)
-		if err != nil {
-			return fmt.Errorf("parse quantity: %w", err)
-		}
-		if value == 0 {
-			delete(ob.Bids, price)
-			continue
-		}
-
-		item, ok := ob.Bids[price]
-		if !ok {
-			item = &OrderBookItem{
-				Price:    price,
-				Quantity: quantity,
-			}
-		} else {
-			item.Quantity = quantity
-		}
-		ob.Bids[price] = item
-
-		timestamp, err := strconv.ParseFloat(bids[2].(string), 64)
-		if err != nil {
-			return err
-		}
-		askUpdatedTime := timeFromUnixTimestampDecimal(timestamp)
-		if lastUpdatedTime.Before(askUpdatedTime) {
-			lastUpdatedTime = askUpdatedTime
-		}
-	}
-	ob.LastUpdated = lastUpdatedTime
-
-	token, err := strconv.ParseInt(checksum, 10, 64)
-	if err != nil {
-		return fmt.Errorf("invalid checksum: %s", checksum)
-	}
-
-	if len(ob.Asks) < krakenChecksumCalculation || len(ob.Bids) < krakenChecksumCalculation {
-		return nil
-	}
-
-	// the top ten ask price levels should be sorted by price from low to high.
-	// the top ten bid price levels should be sorted by price from high to low.
-	asks := sortOrderBook(ob.Asks, true)
-	bids := sortOrderBook(ob.Bids, false)
-
-	// validate the checksum of the update
-	if !s.validateCRC32(asks[:krakenChecksumCalculation], bids[:krakenChecksumCalculation], uint32(token)) {
-		return fmt.Errorf("%s: validate checksum failed", sc.Pair)
-	}
-
-	return nil
 }
 
 func sortOrderBook(items map[string]*OrderBookItem, ascending bool) []*OrderBookItem {
@@ -337,7 +117,7 @@ func sortOrderBook(items map[string]*OrderBookItem, ascending bool) []*OrderBook
 	return sortedItems
 }
 
-func (s *Kraken) validateCRC32(asks, bids []*OrderBookItem, token uint32) bool {
+func (s *Kraken) validateCRC32(asks, bids []*OrderBookItem, token string) bool {
 	var tokenBuilder strings.Builder
 	for i := 0; i < 10; i++ {
 		price := strings.Replace(asks[i].Price, ".", "", 1)
@@ -358,62 +138,110 @@ func (s *Kraken) validateCRC32(asks, bids []*OrderBookItem, token uint32) bool {
 		quantity = strings.TrimLeft(quantity, "0")
 		tokenBuilder.WriteString(quantity)
 	}
+	number, _ := strconv.ParseUint(token, 10, 32)
 
-	return crc32.ChecksumIEEE([]byte(tokenBuilder.String())) == token
+	return crc32.ChecksumIEEE([]byte(tokenBuilder.String())) == uint32(number)
 }
 
-func (s *Kraken) handleOrderBook(sc *SubscriptionChannel, ob map[string]interface{}) error {
-	as, ase := ob[krakenWsOrderbookAskSnapshot].([]interface{})
-	bs, bse := ob[krakenWsOrderbookBidSnapshot].([]interface{})
-	// if it's a snapshot payload
-	if ase || bse {
-		if err := s.handleOrderBookSnapshot(sc, as, bs); err != nil {
-			return fmt.Errorf("snapshot: %w", err)
+func (s *Kraken) handleOrderBook(pair string, update *OrderBookUpdate) error {
+	s.obsMutex.Lock()
+	defer s.obsMutex.Unlock()
+
+	ob, ok := s.obs[pair]
+	if !ok {
+		ob = &OrderBook{
+			Asks: make(map[string]*OrderBookItem),
+			Bids: make(map[string]*OrderBookItem),
 		}
+		s.obs[pair] = ob
+	}
+	var lastUpdatedTime string
+	// Ask data is not always sent
+	for _, ask := range update.Asks {
+		key := ask.Price
+		if ask.Deleted {
+			delete(ob.Asks, key)
+			continue
+		}
+
+		item, ok := ob.Asks[key]
+		if !ok {
+			item = &OrderBookItem{
+				Price:    ask.Price,
+				Quantity: ask.Quantity,
+			}
+		} else {
+			item.Quantity = ask.Quantity
+		}
+		ob.Asks[key] = item
+
+		if lastUpdatedTime < ask.Timestamp {
+			lastUpdatedTime = ask.Timestamp
+		}
+	}
+
+	// Bid data is not always sent
+	for _, bid := range update.Bids {
+		key := bid.Price
+		if bid.Deleted {
+			delete(ob.Bids, key)
+			continue
+		}
+
+		item, ok := ob.Bids[key]
+		if !ok {
+			item = &OrderBookItem{
+				Price:    bid.Price,
+				Quantity: bid.Quantity,
+			}
+		} else {
+			item.Quantity = bid.Quantity
+		}
+		ob.Bids[key] = item
+
+		if lastUpdatedTime < bid.Timestamp {
+			lastUpdatedTime = bid.Timestamp
+		}
+	}
+	ob.LastUpdated = lastUpdatedTime
+
+	// no need checksum for snapshot
+	if update.Snapshot {
 		return nil
 	}
 
-	// if it's a update payload
-	a, ae := ob[krakenWsOrderbookAsk].([]interface{})
-	b, be := ob[krakenWsOrderbookBid].([]interface{})
-	c, ce := ob[krakenWsOrderbookCheckum].(string)
-	if !ce {
-		return errors.New("checksum not found")
-	}
-	if ae || be {
-		if err := s.handleOrderBookUpdate(sc, a, b, c); err != nil {
-			// if needs to unsubscribe and subscribe again ?
-			return fmt.Errorf("%s update: %w", sc.Pair, err)
-		}
+	// checksum is based on top 10 asks and bids
+	if len(ob.Asks) < krakenChecksumCalculation || len(ob.Bids) < krakenChecksumCalculation {
 		return nil
 	}
+
+	// the top ten ask price levels should be sorted by price from low to high.
+	// the top ten bid price levels should be sorted by price from high to low.
+	asks := sortOrderBook(ob.Asks, true)
+	bids := sortOrderBook(ob.Bids, false)
+
+	// validate the checksum of the update
+	if !s.validateCRC32(asks[:krakenChecksumCalculation], bids[:krakenChecksumCalculation], update.CheckSum) {
+		return fmt.Errorf("%s: validate checksum", pair)
+	}
+
 	return nil
 }
 
 func (s *Kraken) handlePublicMessage(data []byte) error {
-	var fields []interface{}
-	if err := json.Unmarshal(data, &fields); err != nil {
-		return fmt.Errorf("json unmarshal: %w", err)
-	}
-	if len(fields) != 4 {
-		return fmt.Errorf("invalid public message: %s", data)
-	}
-	pair, ok := fields[3].(string)
-	if !ok {
-		return fmt.Errorf("pair must be string: %v", fields[2])
-	}
-	channel := s.findSubscriptionChannel(pair)
-	if channel == nil {
-		return fmt.Errorf("asset pair is not subscribed: %s", pair)
+	var message KrakenMessage
+	if err := json.Unmarshal(data, &message); err != nil {
+		return err
 	}
 
-	switch channel.Subscription {
+	channel := strings.Split(message.ChannelName, "-")[0]
+	switch channel {
 	case krakenWsOrderbook:
-		ob, ok := fields[1].(map[string]interface{})
-		if !ok {
-			return fmt.Errorf("received invalid orderbook message: %s", data)
+		var orderbook OrderBookUpdate
+		if err := json.Unmarshal(message.Data, &orderbook); err != nil {
+			return err
 		}
-		if err := s.handleOrderBook(channel, ob); err != nil {
+		if err := s.handleOrderBook(message.Pair, &orderbook); err != nil {
 			return fmt.Errorf("handle order book: %w", err)
 		}
 	default:
@@ -450,7 +278,6 @@ func (s *Kraken) handleGeneralMessage(data []byte) error {
 		if status.Status == krakenSubscriptionStatusError {
 			return fmt.Errorf("subscribe %s: %s", status.ChannelName, status.ErrorMessage)
 		}
-		s.addSubscriptionChannel(&status)
 	default:
 		return fmt.Errorf("event %s is not supported: %s", event, data)
 	}
@@ -463,17 +290,12 @@ func (s *Kraken) handleMessage(data []byte) error {
 	}
 	switch data[0] {
 	case '[': // handle the public message
-		if err := s.handlePublicMessage(data); err != nil {
-			return fmt.Errorf("handle public message: %w", err)
-		}
+		return s.handlePublicMessage(data)
 	case '{': // handle the general message
-		if err := s.handleGeneralMessage(data); err != nil {
-			return fmt.Errorf("handle general message: %w", err)
-		}
+		return s.handleGeneralMessage(data)
 	default:
 		return fmt.Errorf("unexpected message: %s", data)
 	}
-	return nil
 }
 
 func (s *Kraken) setupPingHandler(ctx context.Context) error {
