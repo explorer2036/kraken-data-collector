@@ -80,7 +80,7 @@ func (s *Kraken) Start(ctx context.Context) error {
 		pairs = append(pairs, item.Wsname)
 	}
 	// subscribe the pairs
-	if err := s.doSubscribe(krakenWsOrderbook, pairs[:5]); err != nil {
+	if err := s.doSubscribe(krakenWsOrderbook, pairs[:]); err != nil {
 		return fmt.Errorf("do subscribe: %w", err)
 	}
 
@@ -131,7 +131,7 @@ func (s *Kraken) collectSnapshots() []*OrderBookSnapshot {
 
 func (s *Kraken) snapshot2Disk(ctx context.Context) {
 	go func() {
-		ticker := time.NewTicker(time.Second * 5)
+		ticker := time.NewTicker(time.Second)
 		for {
 			select {
 			case <-ctx.Done():
